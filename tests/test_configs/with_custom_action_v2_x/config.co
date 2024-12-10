@@ -2,5 +2,10 @@ flow main
   global $value
   $value = 3
   match UtteranceUserAction.Finished(final_transcript="start")
-  $sum = await CustomTestAction(param=5)
+  start CustomTestAction(param=5) as $action_ref
+  print $action_ref.uid
+  match $action_ref.Finished() as $event
+  $sum = $event.return_value
+  print $sum
+
   start UtteranceBotAction(script="{$sum}")
