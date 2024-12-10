@@ -15,21 +15,41 @@
 
 """Module for the calling proper action endpoints based on events received at action server endpoint"""
 
+import asyncio
 import importlib.util
 import inspect
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from langchain.chains.base import Chain
 from langchain_core.runnables import Runnable
 
 from nemoguardrails import utils
 from nemoguardrails.actions.llm.utils import LLMCallException
+from nemoguardrails.colang.v2_x.runtime.flows import Action
 from nemoguardrails.logging.callbacks import logging_callbacks
 
 log = logging.getLogger(__name__)
+
+
+class ActionEventGenerator:
+    """Generator to emit event from async Python actions."""
+
+    def __init__(self, action: Action, action_event_queue: asyncio.Queue[dict]):
+        # The relevant action
+        self._action = action
+
+        # Contains reference to the async action event queue
+        self._action_events_queue = action_event_queue
+
+    async def send_action_update_event(self, event_name: str, args: dict) -> None:
+        """Send a ActionUpdated event."""
+        action_event = self._action.updated_event(
+            {"event_parameter_name": event_name, **args}
+        )
+        await self._action_events_queue.put(action_event.to_umim_event())
 
 
 class ActionDispatcher:
@@ -38,6 +58,7 @@ class ActionDispatcher:
         load_all_actions: bool = True,
         config_path: Optional[str] = None,
         import_paths: Optional[List[str]] = None,
+        action_event_queue: Optional[asyncio.Queue[dict]] = None,
     ):
         """
         Initializes an actions dispatcher.
@@ -51,7 +72,11 @@ class ActionDispatcher:
         """
         log.info("Initializing action dispatcher")
 
-        self._registered_actions = {}
+        # Dictionary with all registered actions
+        self._registered_actions: dict = {}
+
+        # Contains generated events form async actions
+        self._async_action_events: Optional[asyncio.Queue[dict]] = action_event_queue
 
         if load_all_actions:
             # TODO: check for better way to find actions dir path or use constants.py
@@ -87,7 +112,7 @@ class ActionDispatcher:
                 for import_path in import_paths:
                     self.load_actions_from_path(Path(import_path.strip()))
 
-        log.info(f"Registered Actions :: {sorted(self._registered_actions.keys())}")
+        log.info("Registered Actions :: %s", sorted(self._registered_actions.keys()))
         log.info("Action dispatcher initialized")
 
     @property
@@ -195,7 +220,7 @@ class ActionDispatcher:
         action_name = self._normalize_action_name(action_name)
 
         if action_name in self._registered_actions:
-            log.info(f"Executing registered action: {action_name}")
+            log.info("Executing registered action: %s", action_name)
             fn = self._registered_actions.get(action_name, None)
 
             # Actions that are registered as classes are initialized lazy, when
@@ -214,7 +239,7 @@ class ActionDispatcher:
                             result = await result
                         else:
                             log.warning(
-                                f"Synchronous action `{action_name}` has been called."
+                                "Synchronous action `%s` has been called.", action_name
                             )
 
                     elif isinstance(fn, Chain):

@@ -1830,7 +1830,7 @@ def _is_done_flow(flow_state: FlowState) -> bool:
 
 
 def _generate_umim_event(state: State, event: Event) -> Dict[str, Any]:
-    umim_event = create_umim_event(event, event.arguments, state.rails_config)
+    umim_event = event.to_umim_event(state.rails_config)
     state.outgoing_events.append(umim_event)
     log.info("[bold violet]<- Action[/]: %s", event)
 
@@ -2384,23 +2384,6 @@ def create_internal_event(
         matching_scores=matching_scores,
     )
     return event
-
-
-def create_umim_event(
-    event: Event, event_args: Dict[str, Any], config: Optional[RailsConfig]
-) -> Dict[str, Any]:
-    """Returns an outgoing UMIM event for the provided action data"""
-    new_event_args = dict(event_args)
-    new_event_args.setdefault(
-        "source_uid", config.event_source_uid if config else "NeMoGuardrails-Colang-2.x"
-    )
-    if isinstance(event, ActionEvent) and event.action_uid is not None:
-        if "action_uid" in new_event_args:
-            event.action_uid = new_event_args["action_uid"]
-            del new_event_args["action_uid"]
-        return new_event_dict(event.name, action_uid=event.action_uid, **new_event_args)
-    else:
-        return new_event_dict(event.name, **new_event_args)
 
 
 def _get_eval_context(state: State, flow_state: FlowState) -> dict:

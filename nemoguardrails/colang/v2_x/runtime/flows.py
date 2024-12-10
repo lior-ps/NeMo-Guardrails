@@ -18,12 +18,24 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Deque,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 from dataclasses_json import dataclass_json
 
@@ -33,7 +45,8 @@ from nemoguardrails.colang.v2_x.lang.colang_ast import (
     FlowReturnMemberDef,
 )
 from nemoguardrails.colang.v2_x.runtime.errors import ColangSyntaxError
-from nemoguardrails.utils import new_readable_uuid, new_uuid
+from nemoguardrails.rails.llm.config import RailsConfig
+from nemoguardrails.utils import new_event_dict, new_readable_uuid, new_uuid
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +121,15 @@ class Event:
         )
         return new_event
 
+    def to_umim_event(self, config: Optional[RailsConfig] = None) -> Dict[str, Any]:
+        """Return a umim event dictionary."""
+        new_event_args = dict(self.arguments)
+        new_event_args.setdefault(
+            "source_uid",
+            config.event_source_uid if config else "NeMoGuardrails-Colang-2.x",
+        )
+        return new_event_dict(self.name, **new_event_args)
+
     # Expose all event parameters as attributes of the event
     def __getattr__(self, name):
         if (
@@ -150,6 +172,19 @@ class ActionEvent(Event):
             new_event.action_uid = event["action_uid"]
         return new_event
 
+    def to_umim_event(self) -> Dict[str, Any]:
+        """Return a umim event dictionary."""
+        new_event_args = dict(self.arguments)
+        new_event_args["source_uid"] = (
+            os.getenv("SOURCE_ID", None) or "NeMoGuardrails-Colang-2.x"
+        )
+        if self.action_uid:
+            return new_event_dict(
+                self.name, action_uid=self.action_uid, **new_event_args
+            )
+        else:
+            return new_event_dict(self.name, **new_event_args)
+
 
 class ActionStatus(Enum):
     """The status of an action."""
@@ -176,6 +211,18 @@ class Action:
         "Stop": "stop_event",
     }
 
+    # List of umim specific parameters
+    _umim_parameters: ClassVar[List[str]] = [
+        "type",
+        "uid",
+        "event_created_at",
+        "source_uid",
+        "action_uid",
+        "action_info_modality",
+        "action_info_modality_policy",
+        "action_finished_at",
+    ]
+
     @classmethod
     def from_event(cls, event: ActionEvent) -> Optional[Action]:
         """Returns the action if event name conforms with UMIM convention."""
@@ -189,6 +236,12 @@ class Action:
                     if name != "Finished"
                     else ActionStatus.FINISHED
                 )
+                if name == "Start":
+                    action.start_event_arguments = {
+                        key: event.arguments[key]
+                        for key in event.arguments
+                        if key not in cls._umim_parameters
+                    }
                 return action
         return None
 
@@ -355,7 +408,7 @@ class FlowConfig:
     id: str
 
     # The sequence of elements that compose the flow.
-    elements: List[ElementType]
+    elements: Sequence[ElementType]
 
     # The flow parameters
     parameters: List[FlowParamDef]

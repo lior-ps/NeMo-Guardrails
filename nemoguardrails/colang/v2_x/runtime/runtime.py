@@ -16,13 +16,14 @@ import asyncio
 import inspect
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 from urllib.parse import urljoin
 
 import aiohttp
 import langchain
 from langchain.chains.base import Chain
 
+from nemoguardrails.actions.action_dispatcher import ActionEventGenerator
 from nemoguardrails.actions.actions import ActionResult
 from nemoguardrails.colang import parse_colang_file
 from nemoguardrails.colang.runtime import Runtime
@@ -32,7 +33,12 @@ from nemoguardrails.colang.v2_x.runtime.errors import (
     ColangRuntimeError,
     ColangSyntaxError,
 )
-from nemoguardrails.colang.v2_x.runtime.flows import Event, FlowStatus
+from nemoguardrails.colang.v2_x.runtime.flows import (
+    Action,
+    ActionEvent,
+    Event,
+    FlowStatus,
+)
 from nemoguardrails.colang.v2_x.runtime.statemachine import (
     FlowConfig,
     InternalEvent,
@@ -147,9 +153,13 @@ class RuntimeV2_x(Runtime):
 
     def _init_flow_configs(self) -> None:
         """Initializes the flow configs based on the config."""
-        self.flow_configs = create_flow_configs_from_flow_list(self.config.flows)
+        self.flow_configs = create_flow_configs_from_flow_list(
+            cast(List[Flow], self.config.flows)
+        )
 
-    async def generate_events(self, events: List[dict]) -> List[dict]:
+    async def generate_events(
+        self, events: List[dict], processing_log: Optional[List[dict]] = None
+    ) -> List[dict]:
         raise NotImplementedError("Stateless API not supported for Colang 2.x, yet.")
 
     @staticmethod
@@ -173,24 +183,22 @@ class RuntimeV2_x(Runtime):
 
     async def _process_start_action(
         self,
-        action_name: str,
-        action_params: dict,
+        action: Action,
         context: dict,
-        events: List[dict],
         state: "State",
     ) -> Tuple[Any, List[dict], dict]:
         """Starts the specified action, waits for it to finish and posts back the result."""
 
-        fn = self.action_dispatcher.get_action(action_name)
+        fn = self.action_dispatcher.get_action(action.name)
 
         # TODO: check action is available in action server
         if fn is None:
             result = self._internal_error_action_result(
-                f"Action '{action_name}' not found."
+                f"Action '{action.name}' not found."
             )
         else:
             # We pass all the parameters that are passed explicitly to the action.
-            kwargs = {**action_params}
+            kwargs = {**action.start_event_arguments}
 
             action_meta = getattr(fn, "action_meta", {})
 
@@ -228,13 +236,21 @@ class RuntimeV2_x(Runtime):
                 and action_type != "chain"
             ):
                 result, status = await self._get_action_resp(
-                    action_meta, action_name, kwargs
+                    action_meta, action.name, kwargs
                 )
             else:
                 # We don't send these to the actions server;
                 # TODO: determine if we should
                 if "events" in parameters:
-                    kwargs["events"] = events
+                    kwargs["events"] = state.last_events
+
+                if "event_generator" in parameters:
+                    kwargs["event_generator"] = ActionEventGenerator(
+                        action, self._async_action_events
+                    )
+
+                if "action" in parameters:
+                    kwargs["action"] = action
 
                 if "context" in parameters:
                     kwargs["context"] = context
@@ -255,13 +271,13 @@ class RuntimeV2_x(Runtime):
 
                 if (
                     "llm" in kwargs
-                    and f"{action_name}_llm" in self.registered_action_params
+                    and f"{action.name}_llm" in self.registered_action_params
                 ):
-                    kwargs["llm"] = self.registered_action_params[f"{action_name}_llm"]
+                    kwargs["llm"] = self.registered_action_params[f"{action.name}_llm"]
 
-                log.info("Running action :: %s", action_name)
+                log.info("Running action :: %s", action.name)
                 result, status = await self.action_dispatcher.execute_action(
-                    action_name, kwargs
+                    action.name, kwargs
                 )
 
             # If the action execution failed, we return a hardcoded message
@@ -271,7 +287,7 @@ class RuntimeV2_x(Runtime):
                     "I'm sorry, an internal error has occurred."
                 )
 
-        return_value = result
+        return_value: Any = result
         return_events: List[dict] = []
         context_updates: dict = {}
 
@@ -317,10 +333,10 @@ class RuntimeV2_x(Runtime):
                                     f"Got status code {resp.status} while getting response from {action_name}"
                                 )
 
-                            resp = await resp.json()
+                            json_resp = await resp.json()
                             result, status = (
-                                resp.get("result", result),
-                                resp.get("status", status),
+                                json_resp.get("result", result),
+                                json_resp.get("status", status),
                             )
                     except Exception as e:
                         log.info(
@@ -337,19 +353,41 @@ class RuntimeV2_x(Runtime):
         return result, status
 
     @staticmethod
-    def _get_action_finished_event(result: dict, **kwargs) -> Dict[str, Any]:
-        """Helper to return the ActionFinished event from the result of running a local action."""
-        return new_event_dict(
-            f"{result['action_name']}Finished",
-            action_uid=result["start_action_event"]["action_uid"],
-            action_name=result["action_name"],
-            status="success",
-            is_success=True,
-            return_value=result["return_value"],
-            events=result["new_events"],
-            **kwargs,
-            # is_system_action=action_meta.get("is_system_action", False),
+    def _get_action_finished_event(
+        action: Action,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Helper to augment the ActionFinished event with additional data."""
+        if "return_value" not in kwargs:
+            kwargs["return_value"] = None
+        if "events" not in kwargs:
+            kwargs["events"] = []
+        event = action.finished_event(
+            {
+                "action_name": action.name,
+                "status": "success",
+                "is_success": True,
+                **kwargs,
+            }
         )
+
+        return event.to_umim_event()
+
+    async def _get_async_action_events(self) -> List[dict]:
+        events = []
+        while True:
+            try:
+                # Attempt to get an item from the queue without waiting
+                event = self._async_action_events.get_nowait()
+
+                # assert isinstance(event, dict), "Python action events must be a dictionary!"
+                # {'type': 'CheckLocalAsync', 'uid': '486a5628-843b-4ed3-b8b3-315ef01c9a13', 'event_created_at': '2024-12-09T14:55:50.847199+00:00', 'source_uid': 'NeMoGuardrails'}
+
+                events.append(event)
+            except asyncio.QueueEmpty:
+                # Break the loop if the queue is empty
+                break
+        return events
 
     async def _get_async_actions_finished_events(
         self, main_flow_uid: str
@@ -389,7 +427,7 @@ class RuntimeV2_x(Runtime):
             self.async_actions[main_flow_uid].remove(finished_task)
 
             # We need to create the corresponding action finished event
-            action_finished_event = self._get_action_finished_event(result)
+            action_finished_event = self._get_action_finished_event(**result)
             action_finished_events.append(action_finished_event)
 
         return action_finished_events, len(pending)
@@ -429,9 +467,11 @@ class RuntimeV2_x(Runtime):
               state.
         """
 
-        output_events = []
-        input_events: List[Union[dict, InternalEvent]] = events.copy()
+        output_events: List[Dict[str, Any]] = []
+        input_events: List[Union[dict, InternalEvent]] = []
         local_running_actions: List[asyncio.Task[dict]] = []
+
+        input_events.extend(events)
 
         if state is None or state == {}:
             state = State(
@@ -475,6 +515,9 @@ class RuntimeV2_x(Runtime):
                     input_events.insert(0, input_event)
                     idx += 1
 
+        # Check if we have new async action events to add
+        input_events.extend(await self._get_async_action_events())
+
         # Check if we have new finished async local action events to add
         (
             local_action_finished_events,
@@ -493,7 +536,7 @@ class RuntimeV2_x(Runtime):
                 events_counter += 1
                 if events_counter > self.max_events:
                     log.critical(
-                        f"Maximum number of events reached ({events_counter})!"
+                        "Maximum number of events reached (%s)!", events_counter
                     )
                     return output_events, state
 
@@ -541,35 +584,28 @@ class RuntimeV2_x(Runtime):
                     # We need to check if we need to run a locally registered action
                     start_action_match = re.match(r"Start(.*Action)", out_event["type"])
                     if start_action_match:
-                        action_name = start_action_match[1]
+                        action_event = ActionEvent.from_umim_event(out_event)
+                        action = Action.from_event(action_event)
+                        assert action
 
                         # If it's an instant action, we finish it right away.
-                        if instant_actions and action_name in instant_actions:
-                            finished_event_data: dict = {
-                                "action_name": action_name,
-                                "start_action_event": out_event,
-                                "return_value": None,
-                                "new_events": [],
-                            }
-
-                            # TODO: figure out a generic way of creating a compliant
-                            #   ...ActionFinished event
-                            extra = {}
-                            if action_name == "UtteranceBotAction":
+                        if instant_actions and action.name in instant_actions:
+                            extra = {"action": action}
+                            if action.name == "UtteranceBotAction":
                                 extra["final_script"] = out_event["script"]
 
                             action_finished_event = self._get_action_finished_event(
-                                finished_event_data, **extra
+                                **extra
                             )
 
                             # We send the completion of the action as an output event
                             # and continue processing it.
                             output_events.append(action_finished_event)
-                            input_events.append(action_finished_event)
+                            new_outgoing_events.append(action_finished_event)
 
-                        elif self.action_dispatcher.has_registered(action_name):
+                        elif self.action_dispatcher.has_registered(action.name):
                             # In this case we need to start the action locally
-                            action_fn = self.action_dispatcher.get_action(action_name)
+                            action_fn = self.action_dispatcher.get_action(action.name)
                             execute_async = getattr(action_fn, "action_meta", {}).get(
                                 "execute_async", False
                             )
@@ -577,12 +613,18 @@ class RuntimeV2_x(Runtime):
                             # Start the local action
                             local_action = asyncio.create_task(
                                 self._run_action(
-                                    action_name,
-                                    start_action_event=out_event,
-                                    events_history=state.last_events,
+                                    action,
                                     state=state,
                                 )
                             )
+
+                            # Generate *ActionStarted event
+                            action_started_event = action.started_event({})
+                            action_started_umim_event = (
+                                action_started_event.to_umim_event()
+                            )
+                            output_events.append(action_started_umim_event)
+                            new_outgoing_events.append(action_started_umim_event)
 
                             # If the function is not async, or async execution is disabled
                             # we execute the actions as a local action.
@@ -604,6 +646,9 @@ class RuntimeV2_x(Runtime):
                     else:
                         output_events.append(out_event)
 
+                # Check if we have new async action events to add
+                new_outgoing_events.extend(await self._get_async_action_events())
+
                 # Check if we have new finished async local action events to add
                 (
                     new_local_action_finished_events,
@@ -624,6 +669,7 @@ class RuntimeV2_x(Runtime):
 
             # If we have any local running actions, we need to wait for at least one
             # of them to finish.
+            # TODO: Check why we should wait for one to finish?!
             if local_running_actions:
                 log.info(
                     "Waiting for %d local actions to finish.",
@@ -639,7 +685,7 @@ class RuntimeV2_x(Runtime):
                     result = finished_task.result()
 
                     # We need to create the corresponding action finished event
-                    action_finished_event = self._get_action_finished_event(result)
+                    action_finished_event = self._get_action_finished_event(**result)
                     input_events.append(action_finished_event)
 
         if return_local_async_action_count:
@@ -663,42 +709,29 @@ class RuntimeV2_x(Runtime):
 
     async def _run_action(
         self,
-        action_name: str,
-        start_action_event: dict,
-        events_history: List[Union[dict, Event]],
+        action: Action,
         state: "State",
     ) -> dict:
         """Runs the locally registered action.
 
         Args
-            action_name: The name of the action to be executed.
-            start_action_event: The event that triggered the action.
-            events_history: The recent history of events that led to the action being triggered.
+            action: The action to be executed.
+            state: The state of the runtime.
         """
 
-        # NOTE: To extract the actual parameters that should be passed to the local action,
-        # we ignore all the keys from "an empty event" of the same type.
-        ignore_keys = new_event_dict(start_action_event["type"]).keys()
-        action_params = {
-            k: v for k, v in start_action_event.items() if k not in ignore_keys
-        }
-
         return_value, new_events, context_updates = await self._process_start_action(
-            action_name,
-            action_params=action_params,
+            action,
             context=state.context,
-            events=events_history,
             state=state,
         )
 
         state.context.update(context_updates)
 
         return {
-            "action_name": action_name,
+            "action": action,
             "return_value": return_value,
             "new_events": new_events,
             "context_updates": context_updates,
-            "start_action_event": start_action_event,
         }
 
 

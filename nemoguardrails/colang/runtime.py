@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import logging
 from abc import abstractmethod
 from typing import Any, Callable, List, Optional, Tuple
@@ -31,10 +32,14 @@ class Runtime:
         self.config = config
         self.verbose = verbose
 
+        # Contains generated events form async Python actions that should be processed
+        self._async_action_events: asyncio.Queue[dict] = asyncio.Queue()
+
         # Register the actions with the dispatcher.
         self.action_dispatcher = ActionDispatcher(
             config_path=config.config_path,
             import_paths=list(config.imported_paths.values()),
+            action_event_queue=self._async_action_events,
         )
 
         # The list of additional parameters that can be passed to the actions.
