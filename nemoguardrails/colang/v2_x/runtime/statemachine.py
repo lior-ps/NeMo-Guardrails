@@ -1830,7 +1830,9 @@ def _is_done_flow(flow_state: FlowState) -> bool:
 
 
 def _generate_umim_event(state: State, event: Event) -> Dict[str, Any]:
-    umim_event = event.to_umim_event(state.rails_config)
+    umim_event = event.to_umim_event(
+        state.rails_config.event_source_uid if state and state.rails_config else None
+    )
     state.outgoing_events.append(umim_event)
     log.info("[bold violet]<- Action[/]: %s", event)
 

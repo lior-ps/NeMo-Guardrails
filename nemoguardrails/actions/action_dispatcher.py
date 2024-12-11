@@ -21,7 +21,7 @@ import inspect
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from langchain.chains.base import Chain
 from langchain_core.runnables import Runnable
@@ -30,6 +30,7 @@ from nemoguardrails import utils
 from nemoguardrails.actions.llm.utils import LLMCallException
 from nemoguardrails.colang.v2_x.runtime.flows import Action
 from nemoguardrails.logging.callbacks import logging_callbacks
+from nemoguardrails.rails.llm.config import RailsConfig
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +38,15 @@ log = logging.getLogger(__name__)
 class ActionEventGenerator:
     """Generator to emit event from async Python actions."""
 
-    def __init__(self, action: Action, action_event_queue: asyncio.Queue[dict]):
+    def __init__(
+        self,
+        config: RailsConfig,
+        action: Action,
+        action_event_queue: asyncio.Queue[dict],
+    ):
+        # The LLMRails config
+        self._config = config
+
         # The relevant action
         self._action = action
 
@@ -49,7 +58,9 @@ class ActionEventGenerator:
         action_event = self._action.updated_event(
             {"event_parameter_name": event_name, **args}
         )
-        await self._action_events_queue.put(action_event.to_umim_event())
+        await self._action_events_queue.put(
+            action_event.to_umim_event(self._config.event_source_uid)
+        )
 
 
 class ActionDispatcher:

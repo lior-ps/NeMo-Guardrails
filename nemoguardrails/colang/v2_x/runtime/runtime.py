@@ -246,7 +246,7 @@ class RuntimeV2_x(Runtime):
 
                 if "event_generator" in parameters:
                     kwargs["event_generator"] = ActionEventGenerator(
-                        action, self._async_action_events
+                        self.config, action, self._async_action_events
                     )
 
                 if "action" in parameters:
@@ -354,6 +354,7 @@ class RuntimeV2_x(Runtime):
 
     @staticmethod
     def _get_action_finished_event(
+        rails_config: RailsConfig,
         action: Action,
         **kwargs,
     ) -> Dict[str, Any]:
@@ -371,7 +372,7 @@ class RuntimeV2_x(Runtime):
             }
         )
 
-        return event.to_umim_event()
+        return event.to_umim_event(rails_config.event_source_uid)
 
     async def _get_async_action_events(self) -> List[dict]:
         events = []
@@ -427,7 +428,9 @@ class RuntimeV2_x(Runtime):
             self.async_actions[main_flow_uid].remove(finished_task)
 
             # We need to create the corresponding action finished event
-            action_finished_event = self._get_action_finished_event(**result)
+            action_finished_event = self._get_action_finished_event(
+                self.config, **result
+            )
             action_finished_events.append(action_finished_event)
 
         return action_finished_events, len(pending)
@@ -595,7 +598,7 @@ class RuntimeV2_x(Runtime):
                                 extra["final_script"] = out_event["script"]
 
                             action_finished_event = self._get_action_finished_event(
-                                **extra
+                                self.config, **extra
                             )
 
                             # We send the completion of the action as an output event
@@ -621,7 +624,9 @@ class RuntimeV2_x(Runtime):
                             # Generate *ActionStarted event
                             action_started_event = action.started_event({})
                             action_started_umim_event = (
-                                action_started_event.to_umim_event()
+                                action_started_event.to_umim_event(
+                                    self.config.event_source_uid
+                                )
                             )
                             output_events.append(action_started_umim_event)
                             new_outgoing_events.append(action_started_umim_event)
@@ -685,7 +690,9 @@ class RuntimeV2_x(Runtime):
                     result = finished_task.result()
 
                     # We need to create the corresponding action finished event
-                    action_finished_event = self._get_action_finished_event(**result)
+                    action_finished_event = self._get_action_finished_event(
+                        self.config, **result
+                    )
                     input_events.append(action_finished_event)
 
         if return_local_async_action_count:

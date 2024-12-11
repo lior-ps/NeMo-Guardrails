@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -45,7 +44,6 @@ from nemoguardrails.colang.v2_x.lang.colang_ast import (
     FlowReturnMemberDef,
 )
 from nemoguardrails.colang.v2_x.runtime.errors import ColangSyntaxError
-from nemoguardrails.rails.llm.config import RailsConfig
 from nemoguardrails.utils import new_event_dict, new_readable_uuid, new_uuid
 
 log = logging.getLogger(__name__)
@@ -121,12 +119,12 @@ class Event:
         )
         return new_event
 
-    def to_umim_event(self, config: Optional[RailsConfig] = None) -> Dict[str, Any]:
+    def to_umim_event(self, event_source_uid: Optional[str] = None) -> Dict[str, Any]:
         """Return a umim event dictionary."""
         new_event_args = dict(self.arguments)
         new_event_args.setdefault(
             "source_uid",
-            config.event_source_uid if config else "NeMoGuardrails-Colang-2.x",
+            event_source_uid if event_source_uid else "NeMoGuardrails-Colang-2.x",
         )
         return new_event_dict(self.name, **new_event_args)
 
@@ -172,11 +170,12 @@ class ActionEvent(Event):
             new_event.action_uid = event["action_uid"]
         return new_event
 
-    def to_umim_event(self) -> Dict[str, Any]:
+    def to_umim_event(self, event_source_uid: Optional[str] = None) -> Dict[str, Any]:
         """Return a umim event dictionary."""
         new_event_args = dict(self.arguments)
-        new_event_args["source_uid"] = (
-            os.getenv("SOURCE_ID", None) or "NeMoGuardrails-Colang-2.x"
+        new_event_args.setdefault(
+            "source_uid",
+            event_source_uid if event_source_uid else "NeMoGuardrails-Colang-2.x",
         )
         if self.action_uid:
             return new_event_dict(
