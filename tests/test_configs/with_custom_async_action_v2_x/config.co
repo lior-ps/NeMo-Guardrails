@@ -3,7 +3,7 @@ flow main
   start CustomAsyncTestAction() as $action_ref
   while True:
     when $action_ref.ValueUpdated() as $ref:
-      await UtteranceBotAction(script="Value: {$ref.number}")
+      start UtteranceBotAction(script="Value: {$ref.number}")
     or when $action_ref.Finished() as $event:
-      await UtteranceBotAction(script="End")
+      start UtteranceBotAction(script="End")
       break

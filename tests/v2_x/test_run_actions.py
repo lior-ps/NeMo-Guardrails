@@ -159,6 +159,8 @@ def test_custom_action_generating_async_events():
         Value: 3
         Value: 4
         End
+        Event: StopUtteranceBotAction
+        Event: StopUtteranceBotAction
         """
 
     loop = get_or_create_event_loop()
