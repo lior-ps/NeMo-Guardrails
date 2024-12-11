@@ -498,7 +498,9 @@ async def _run_chat_v2_x(rails_app: LLMRails):
                 chat_state.input_events = []
             else:
                 chat_state.waiting_user_input = True
-                await enable_input.wait()
+                # NOTE: We should never disable the user input since we can have
+                # async Python actions running in parallel
+                # await enable_input.wait()
 
                 user_message: str = await chat_state.session.prompt_async(
                     HTML("<prompt>\n> </prompt>"),

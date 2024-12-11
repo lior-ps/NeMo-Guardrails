@@ -322,7 +322,9 @@ class ChatInterface:
                 self.chat_state.input_events = []
             else:
                 self.chat_state.waiting_user_input = True
-                await self.enable_input.wait()
+                # NOTE: We should never disable the user input since we can have
+                # async Python actions running in parallel
+                # await enable_input.wait()
 
                 user_message = ""
                 if not self.input_queue.empty():
