@@ -524,7 +524,7 @@ class RuntimeV2_x(Runtime):
         # Check if we have new finished async local action events to add
         (
             local_action_finished_events,
-            pending_local_async_action_counter,
+            pending_local_action_counter,
         ) = await self._get_async_actions_finished_events(main_flow_uid)
         input_events.extend(local_action_finished_events)
         local_action_finished_events = []
@@ -534,8 +534,9 @@ class RuntimeV2_x(Runtime):
         # we continue the processing.
         events_counter = 0
         while input_events or local_running_actions:
-            new_outgoing_events = []
-            for event in input_events:
+            while input_events:
+                event = input_events.pop(0)
+
                 events_counter += 1
                 if events_counter > self.max_events:
                     log.critical(
@@ -558,7 +559,7 @@ class RuntimeV2_x(Runtime):
 
                 # Advance the state machine
                 new_event: Optional[Union[dict, Event]] = event
-                while new_event is not None:
+                while new_event:
                     try:
                         run_to_completion(state, new_event)
                         new_event = None
@@ -572,13 +573,6 @@ class RuntimeV2_x(Runtime):
                             },
                         )
                     await asyncio.sleep(0.001)
-
-                # If we have context updates after this event, we first add that.
-                # TODO: Check if this is still needed for e.g. stateless implementation
-                # if state.context_updates:
-                #     output_events.append(
-                #         new_event_dict("ContextUpdate", data=state.context_updates)
-                #     )
 
                 for out_event in state.outgoing_events:
                     # We also record the out events in the recent history.
@@ -603,8 +597,9 @@ class RuntimeV2_x(Runtime):
 
                             # We send the completion of the action as an output event
                             # and continue processing it.
+                            # TODO: Why do we need an output event for that? It should only be an new input event
                             output_events.append(action_finished_event)
-                            new_outgoing_events.append(action_finished_event)
+                            input_events.append(action_finished_event)
 
                         elif self.action_dispatcher.has_registered(action.name):
                             # In this case we need to start the action locally
@@ -628,8 +623,8 @@ class RuntimeV2_x(Runtime):
                                     self.config.event_source_uid
                                 )
                             )
-                            output_events.append(action_started_umim_event)
-                            new_outgoing_events.append(action_started_umim_event)
+                            # output_events.append(action_started_umim_event)
+                            input_events.append(action_started_umim_event)
 
                             # If the function is not async, or async execution is disabled
                             # we execute the actions as a local action.
@@ -651,26 +646,18 @@ class RuntimeV2_x(Runtime):
                     else:
                         output_events.append(out_event)
 
-                # Check if we have new async action events to add
-                new_outgoing_events.extend(await self._get_async_action_events())
+                # Add new async action events as new input events
+                input_events.extend(await self._get_async_action_events())
 
-                # Check if we have new finished async local action events to add
+                # Add new finished async local action events as new input events
                 (
-                    new_local_action_finished_events,
-                    pending_local_async_action_counter,
+                    new_action_finished_events,
+                    pending_local_action_counter,
                 ) = await self._get_async_actions_finished_events(main_flow_uid)
-                local_action_finished_events.extend(new_local_action_finished_events)
-                new_outgoing_events.extend(state.outgoing_events)
+                input_events.extend(new_action_finished_events)
 
-            input_events.clear()
-
-            # If we have outgoing events we are also processing them as input events
-            if new_outgoing_events:
-                input_events.extend(new_outgoing_events)
-                continue
-
-            input_events.extend(local_action_finished_events)
-            local_action_finished_events = []
+                # Add generated events as new input events
+                input_events.extend(state.outgoing_events)
 
             # If we have any local running actions, we need to wait for at least one
             # of them to finish.
@@ -703,7 +690,7 @@ class RuntimeV2_x(Runtime):
             )
             output_events.append(
                 new_event_dict(
-                    "LocalAsyncCounter", counter=pending_local_async_action_counter
+                    "LocalAsyncCounter", counter=pending_local_action_counter
                 )
             )
 
