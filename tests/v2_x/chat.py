@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import nemoguardrails.rails.llm.llmrails
-from nemoguardrails import LLMRails, RailsConfig
+from nemoguardrails import LLMRails
 from nemoguardrails.cli.chat import extract_scene_text_content, parse_events_inputs
 from nemoguardrails.colang.v2_x.runtime.flows import State
 from nemoguardrails.utils import new_event_dict, new_uuid
@@ -44,7 +44,7 @@ class ChatInterface:
     def __init__(self, rails_app: LLMRails):
         self.chat_state = ChatState()
         self.rails_app = rails_app
-        self.input_queue = asyncio.Queue()
+        self.input_queue: asyncio.Queue = asyncio.Queue()
         self.loop = asyncio.get_event_loop()
         asyncio.create_task(self.run())
 

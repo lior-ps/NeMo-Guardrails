@@ -14,11 +14,14 @@
 # limitations under the License.
 
 import logging
+import os
 
 from rich.logging import RichHandler
 
 from nemoguardrails import RailsConfig
+from nemoguardrails.utils import get_or_create_event_loop
 from tests.utils import TestChat
+from tests.v2_x.utils import compare_interaction_with_test_script
 
 FORMAT = "%(message)s"
 logging.basicConfig(
@@ -28,8 +31,10 @@ logging.basicConfig(
     handlers=[RichHandler(markup=True)],
 )
 
+CONFIGS_FOLDER = os.path.join(os.path.dirname(__file__), "../test_configs")
 
-def test_1():
+
+def test_basic_statement():
     config = RailsConfig.from_content(
         colang_content="""
         flow user express greeting
@@ -62,7 +67,7 @@ def test_1():
     chat << "Hello world!"
 
 
-def test_2():
+def test_short_return_statement():
     config = RailsConfig.from_content(
         colang_content="""
         flow user express greeting
@@ -95,7 +100,7 @@ def test_2():
     chat << "John"
 
 
-def test_3():
+def test_long_return_statement():
     config = RailsConfig.from_content(
         colang_content="""
         flow bot say $text
@@ -129,5 +134,40 @@ def test_3():
     chat << "I couldn't find any items matching your request!"
 
 
+def test_custom_action():
+    # This config just imports another one, to check that actions are correctly
+    # loaded.
+    config = RailsConfig.from_path(
+        os.path.join(CONFIGS_FOLDER, "with_custom_action_v2_x")
+    )
+
+    chat = TestChat(
+        config,
+        llm_completions=[],
+    )
+
+    chat >> "start"
+    chat << "8"
+
+
+def test_custom_action_generating_async_events():
+    path = os.path.join(CONFIGS_FOLDER, "with_custom_async_action_v2_x")
+    test_script = """
+        > start
+        Value: 1
+        Value: 2
+        Value: 3
+        Value: 4
+        End
+        """
+
+    loop = get_or_create_event_loop()
+    result = loop.run_until_complete(
+        compare_interaction_with_test_script(test_script, 10.0, colang_path=path)
+    )
+
+    assert result is None, result
+
+
 if __name__ == "__main__":
-    test_3()
+    test_custom_action_generating_async_events()
