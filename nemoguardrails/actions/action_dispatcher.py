@@ -28,7 +28,7 @@ from langchain_core.runnables import Runnable
 
 from nemoguardrails import utils
 from nemoguardrails.actions.llm.utils import LLMCallException
-from nemoguardrails.colang.v2_x.runtime.flows import Action
+from nemoguardrails.colang.v2_x.runtime.flows import Action, Event
 from nemoguardrails.logging.callbacks import logging_callbacks
 from nemoguardrails.rails.llm.config import RailsConfig
 
@@ -53,13 +53,20 @@ class ActionEventGenerator:
         # Contains reference to the async action event queue
         self._action_events_queue = action_event_queue
 
-    async def send_action_update_event(self, event_name: str, args: dict) -> None:
-        """Send a ActionUpdated event."""
+    def send_action_updated_event(self, event_name: str, args: dict) -> None:
+        """Send an Action*Updated event."""
         action_event = self._action.updated_event(
             {"event_parameter_name": event_name, **args}
         )
-        await self._action_events_queue.put(
+        self._action_events_queue.put_nowait(
             action_event.to_umim_event(self._config.event_source_uid)
+        )
+
+    def send_raw_event(self, event_name: str, args: dict) -> None:
+        """Send any event."""
+        event = Event(event_name, args)
+        self._action_events_queue.put_nowait(
+            event.to_umim_event(self._config.event_source_uid)
         )
 
 
