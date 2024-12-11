@@ -4,6 +4,8 @@ flow main
   while True:
     when $action_ref.ValueUpdated() as $ref:
       start UtteranceBotAction(script="Value: {$ref.number}")
+    or when NewCustomUmimEvent() as $ref:
+      start UtteranceBotAction(script="Secret: {$ref.secret}")
     or when $action_ref.Finished() as $event:
       start UtteranceBotAction(script="End")
       break

@@ -158,8 +158,8 @@ def test_custom_action_generating_async_events():
         Value: 2
         Value: 3
         Value: 4
+        Secret: xyz
         End
-        Event: StopUtteranceBotAction
         Event: StopUtteranceBotAction
         """
 

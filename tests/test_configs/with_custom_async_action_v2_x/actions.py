@@ -24,3 +24,6 @@ async def custom_async_test(event_generator: ActionEventGenerator):
     for i in range(1, 5):
         await asyncio.sleep(1)
         event_generator.send_action_updated_event("Value", {"number": i})
+    await asyncio.sleep(1)
+    event_generator.send_raw_event("NewCustomUmimEvent", {"secret": "xyz"})
+    await asyncio.sleep(1)
