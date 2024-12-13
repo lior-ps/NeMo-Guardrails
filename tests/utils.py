@@ -25,6 +25,7 @@ from langchain.callbacks.manager import (
     CallbackManagerForLLMRun,
 )
 from langchain_core.language_models.llms import LLM
+from pydantic import Field
 
 from nemoguardrails import LLMRails, RailsConfig
 from nemoguardrails.colang import parse_colang_file
@@ -40,6 +41,7 @@ class FakeLLM(LLM):
     """Fake LLM wrapper for testing purposes."""
 
     responses: List
+    prompt_history: List[str] = Field(default_factory=list, exclude=True)
     i: int = 0
     streaming: bool = False
 
@@ -60,7 +62,7 @@ class FakeLLM(LLM):
                 f"No responses available for query number {self.i + 1} in FakeLLM. "
                 "Most likely, too many LLM calls are made or additional responses need to be provided."
             )
-
+        self.prompt_history.append(prompt)
         response = self.responses[self.i]
         self.i += 1
         return response
@@ -77,7 +79,7 @@ class FakeLLM(LLM):
                 f"No responses available for query number {self.i + 1} in FakeLLM. "
                 "Most likely, too many LLM calls are made or additional responses need to be provided."
             )
-
+        self.prompt_history.append(prompt)
         response = self.responses[self.i]
         self.i += 1
 
