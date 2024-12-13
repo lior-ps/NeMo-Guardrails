@@ -763,16 +763,21 @@ class LLMGenerationActionsV2dotx(LLMGenerationActions):
                 if "GenerateValueAction" not in result.text:
                     examples += f"{result.text}\n\n"
 
-        llm_call_info_var.set(
-            LLMCallInfo(task=Task.GENERATE_VALUE_FROM_INSTRUCTION.value)
+        out_variables: dict[str, Any] = {}
+        rendered_instructions = self.llm_task_manager._render_string(
+            instructions,
+            out_variables=out_variables,
         )
 
+        task = out_variables.get("template", Task.GENERATE_VALUE_FROM_INSTRUCTION)
+        llm_call_info_var.set(LLMCallInfo(task=task))
+
         prompt = self.llm_task_manager.render_task_prompt(
-            task=Task.GENERATE_VALUE_FROM_INSTRUCTION,
+            task=task,
             events=events,
             context={
                 "examples": examples,
-                "instructions": instructions,
+                "instructions": rendered_instructions,
                 "var_name": var_name if var_name else "result",
                 "context": state.context,
             },
@@ -869,16 +874,20 @@ class LLMGenerationActionsV2dotx(LLMGenerationActions):
         render_context["tool_names"] = ", ".join(tool_names)
 
         # TODO: add the context of the flow
+        out_variables = {}
         flow_nld = self.llm_task_manager._render_string(
-            textwrap.dedent(docstring), context=render_context, events=events
+            textwrap.dedent(docstring),
+            context=render_context,
+            events=events,
+            out_variables=out_variables,
         )
 
-        llm_call_info_var.set(
-            LLMCallInfo(task=Task.GENERATE_FLOW_CONTINUATION_FROM_NLD.value)
-        )
+        task = out_variables.get("template", Task.GENERATE_FLOW_CONTINUATION_FROM_NLD)
+
+        llm_call_info_var.set(LLMCallInfo(task=task))
 
         prompt = self.llm_task_manager.render_task_prompt(
-            task=Task.GENERATE_FLOW_CONTINUATION_FROM_NLD,
+            task=task,
             events=events,
             context={
                 "flow_nld": flow_nld,

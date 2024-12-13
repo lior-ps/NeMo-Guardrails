@@ -109,12 +109,14 @@ class LLMTaskManager:
         template_str: str,
         context: Optional[dict] = None,
         events: Optional[List[dict]] = None,
+        out_variables: Optional[dict] = None,
     ) -> str:
         """Render a template using the provided context information.
 
         :param template_str: The template to render.
         :param context: The context for rendering the prompt.
         :param events: The history of events so far.
+        :param out_variables: If not None the dict will be populated with variables set in the template
         :return: The rendered template.
         :rtype: str.
         """
@@ -152,7 +154,15 @@ class LLMTaskManager:
 
                     render_context[variable] = value
 
-        return template.render(render_context)
+        rendered = template.render(render_context)
+
+        if out_variables is not None:
+            mod = template.module
+            template_vars = {
+                n: getattr(mod, n) for n in dir(mod) if not n.startswith("_")
+            }
+            out_variables.update(template_vars)
+        return rendered
 
     def _render_messages(
         self,
