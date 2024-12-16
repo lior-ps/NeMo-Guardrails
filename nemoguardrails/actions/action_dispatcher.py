@@ -33,6 +33,8 @@ log = logging.getLogger(__name__)
 
 
 class ActionDispatcher:
+    """Manages the execution and life time of local actions."""
+
     def __init__(
         self,
         load_all_actions: bool = True,

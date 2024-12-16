@@ -346,7 +346,7 @@ class Action:
     def change_event(self, args: dict) -> ActionEvent:
         """Changes a parameter of a started action."""
         return ActionEvent(
-            name=f"Change{self.name}", arguments=args["arguments"], action_uid=self.uid
+            name=f"Change{self.name}", arguments=args, action_uid=self.uid
         )
 
     def stop_event(self, _args: dict) -> ActionEvent:

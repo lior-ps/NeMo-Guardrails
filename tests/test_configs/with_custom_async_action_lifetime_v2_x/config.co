@@ -4,6 +4,11 @@ flow main
   # Normal action lifetime
   start Test1Action() as $action1_ref
   match $action1_ref.Started()
+  start UtteranceBotAction(script="Started")
+  send $action1_ref.Change(direction="top")
+  send $action1_ref.Change(volume=10)
+  match Test1ActionVolumeUpdated() as $ref
+  start UtteranceBotAction(script="Volume: {$ref.value}")
   match $action1_ref.Finished() as $ref
   start UtteranceBotAction(script="Result: {$ref.is_success}")
 

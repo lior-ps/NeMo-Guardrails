@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 from urllib.parse import urljoin
@@ -87,7 +88,7 @@ class ActionEventHandler:
         Send an Action*Updated event.
 
         Args:
-            event_name (str): The name of the action event
+            event_name (str): The name of the action event, e.g. `Attention` for AttentionUserActionUpdated
             args (Optional[dict]): An optional dictionary with the event arguments
         """
 
@@ -99,6 +100,17 @@ class ActionEventHandler:
         self._event_output_queue.put_nowait(
             action_event.to_umim_event(self._config.event_source_uid)
         )
+
+    async def wait_for_change_action_event(
+        self, timeout: Optional[float] = None
+    ) -> Optional[dict]:
+        """
+        Wait for new Change*Action event.
+
+        Args:
+             timeout (Optional[float]): The time to wait for the new event before it continues
+        """
+        return await self.wait_for_event(self._action.change_event({}).name, timeout)
 
     def send_event(self, event_name: str, args: Optional[dict] = None) -> None:
         """
@@ -113,11 +125,37 @@ class ActionEventHandler:
             event.to_umim_event(self._config.event_source_uid)
         )
 
+    async def wait_for_event(
+        self, event_name: Optional[str] = None, timeout: Optional[float] = None
+    ) -> Optional[dict]:
+        """
+        Wait for next new input event to process.
+
+        Args:
+            event_name (Optional[str]): Optional event name to filter for, if None all events will be received
+            timeout (Optional[float]): The time to wait for new events before it continues
+        """
+        keep_waiting = True
+        start_time = time.time()
+        while keep_waiting:
+            try:
+                # Check cumulative waiting time
+                if timeout and time.time() - start_time > timeout:
+                    raise asyncio.TimeoutError()
+                # Wait for next event
+                event = await asyncio.wait_for(self._event_input_queue.get(), timeout)
+                if event_name is None or event["type"] == event_name:
+                    return event
+            except asyncio.TimeoutError:
+                # Timeout occurred, stop consuming
+                keep_waiting = False
+        return None
+
     async def wait_for_events(
         self, event_name: Optional[str] = None, timeout: Optional[float] = None
     ) -> List[dict]:
         """
-        Waits for new input events to process.
+        Wait for new input events to process.
 
         Args:
             event_name (Optional[str]): Optional event name to filter for, if None all events will be received
@@ -125,8 +163,12 @@ class ActionEventHandler:
         """
         events: List[dict] = []
         keep_waiting = True
+        start_time = time.time()
         while keep_waiting:
             try:
+                # Check cumulative waiting time
+                if timeout and time.time() - start_time > timeout:
+                    raise asyncio.TimeoutError()
                 # Wait for new events
                 event = await asyncio.wait_for(self._event_input_queue.get(), timeout)
                 # Gather all new events

@@ -150,7 +150,7 @@ def test_custom_action():
     chat << "8"
 
 
-def test_custom_action_generating_async_events():
+def test_custom_action_async_events():
     path = os.path.join(CONFIGS_FOLDER, "with_custom_async_action_events_v2_x")
     test_script = """
         > start
@@ -174,5 +174,28 @@ def test_custom_action_generating_async_events():
     assert result is None, result
 
 
+def test_custom_async_action_lifetime():
+    path = os.path.join(CONFIGS_FOLDER, "with_custom_async_action_lifetime_v2_x")
+    test_script = """
+        > start
+        Started
+        Volume: 10
+        Result: True
+        Result: True
+        Result: Local action finished with an exception!
+        Event: StopUtteranceBotAction
+        Event: StopUtteranceBotAction
+        Event: StopUtteranceBotAction
+        Event: StopUtteranceBotAction
+        """
+
+    loop = get_or_create_event_loop()
+    result = loop.run_until_complete(
+        compare_interaction_with_test_script(test_script, 6.0, colang_path=path)
+    )
+
+    assert result is None, result
+
+
 if __name__ == "__main__":
-    test_custom_action_generating_async_events()
+    test_custom_async_action_lifetime()

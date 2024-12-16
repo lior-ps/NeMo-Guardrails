@@ -20,8 +20,19 @@ from nemoguardrails.colang.v2_x.runtime.runtime import ActionEventHandler
 
 
 @action(name="Test1Action", is_system_action=True, execute_async=True)
-async def test1():
+async def test1(event_handler: ActionEventHandler):
+    event = None
+    value = None
+    while event is None:
+        event = await event_handler.wait_for_change_action_event()
+        if event:
+            value = event.get("volume", None)
+            if value:
+                break
+            else:
+                event = None
     await asyncio.sleep(1)
+    event_handler.send_action_updated_event("Volume", {"value": value})
 
 
 @action(name="Test2Action", is_system_action=True, execute_async=True)

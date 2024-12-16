@@ -27,7 +27,6 @@ async def custom_async_test1(event_handler: ActionEventHandler):
     await asyncio.sleep(1)
     event_handler.send_event("CustomEventA", {"value": "A"})
     events = await event_handler.wait_for_events("CustomEventB")
-    print("-----------> CustomEventB")
     event_handler.send_event("CustomEventResponse", {"value": events[0]["value"]})
     await event_handler.wait_for_events("CustomEventC")
     await asyncio.sleep(3)
@@ -37,6 +36,5 @@ async def custom_async_test1(event_handler: ActionEventHandler):
 @action(name="CustomAsyncTest2Action", is_system_action=True, execute_async=True)
 async def custom_async_test2(event_handler: ActionEventHandler):
     await event_handler.wait_for_events("CustomEventResponse")
-    print("-----------> CustomEventResponse")
     await asyncio.sleep(3)
     event_handler.send_event("CustomEventC", {"value": "C"})
