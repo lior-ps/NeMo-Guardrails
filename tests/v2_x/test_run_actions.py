@@ -151,14 +151,17 @@ def test_custom_action():
 
 
 def test_custom_action_generating_async_events():
-    path = os.path.join(CONFIGS_FOLDER, "with_custom_async_action_v2_x")
+    path = os.path.join(CONFIGS_FOLDER, "with_custom_async_action_events_v2_x")
     test_script = """
         > start
         Value: 1
         Value: 2
-        Value: 3
-        Value: 4
-        Secret: xyz
+        Event: CustomEventA
+        Value: A
+        Event: CustomEventB
+        Event: CustomEventResponse
+        Event: CustomEventC
+        Check
         End
         Event: StopUtteranceBotAction
         """

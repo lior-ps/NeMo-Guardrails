@@ -16,14 +16,14 @@ import asyncio
 import inspect
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 from urllib.parse import urljoin
 
 import aiohttp
 import langchain
 from langchain.chains.base import Chain
 
-from nemoguardrails.actions.action_dispatcher import ActionEventGenerator
 from nemoguardrails.actions.actions import ActionResult
 from nemoguardrails.colang import parse_colang_file
 from nemoguardrails.colang.runtime import Runtime
@@ -56,22 +56,131 @@ langchain.debug = False
 log = logging.getLogger(__name__)
 
 
+class ActionEventHandler:
+    """Handles input and output events to Python actions."""
+
+    _lock = asyncio.Lock()
+
+    def __init__(
+        self,
+        config: RailsConfig,
+        action: Action,
+        event_input_queue: asyncio.Queue[dict],
+        event_output_queue: asyncio.Queue[dict],
+    ):
+        # The LLMRails config
+        self._config = config
+
+        # The relevant action
+        self._action = action
+
+        # Action specific action event queue for event receiving
+        self._event_input_queue = event_input_queue
+
+        # Shared async action event queue for event sending
+        self._event_output_queue = event_output_queue
+
+    def send_action_updated_event(
+        self, event_name: str, args: Optional[dict] = None
+    ) -> None:
+        """
+        Send an Action*Updated event.
+
+        Args:
+            event_name (str): The name of the action event
+            args (Optional[dict]): An optional dictionary with the event arguments
+        """
+
+        if args:
+            args = {"event_parameter_name": event_name, **args}
+        else:
+            args = {"event_parameter_name": event_name}
+        action_event = self._action.updated_event(args)
+        self._event_output_queue.put_nowait(
+            action_event.to_umim_event(self._config.event_source_uid)
+        )
+
+    def send_event(self, event_name: str, args: Optional[dict] = None) -> None:
+        """
+        Send any event.
+
+        Args:
+            event_name (str): The event name
+            args (Optional[dict]): An optional dictionary with the event arguments
+        """
+        event = Event(event_name, args if args else {})
+        self._event_output_queue.put_nowait(
+            event.to_umim_event(self._config.event_source_uid)
+        )
+
+    async def wait_for_events(
+        self, event_name: Optional[str] = None, timeout: Optional[float] = None
+    ) -> List[dict]:
+        """
+        Waits for new input events to process.
+
+        Args:
+            event_name (Optional[str]): Optional event name to filter for, if None all events will be received
+            timeout (Optional[float]): The time to wait for new events before it continues
+        """
+        events: List[dict] = []
+        keep_waiting = True
+        while keep_waiting:
+            try:
+                # Wait for new events
+                event = await asyncio.wait_for(self._event_input_queue.get(), timeout)
+                # Gather all new events
+                while True:
+                    if event_name is None or event["type"] == event_name:
+                        events.append(event)
+                    event = self._event_input_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                self._event_input_queue.task_done()
+                keep_waiting = len(events) == 0
+            except asyncio.TimeoutError:
+                # Timeout occurred, stop consuming
+                keep_waiting = False
+        return events
+
+
+@dataclass
+class LocalActionData:
+    """Structure to help organize action related data."""
+
+    # All active async action task
+    task: asyncio.Task
+    # The action's output event queue
+    input_event_queues: asyncio.Queue[dict] = field(
+        default_factory=lambda: asyncio.Queue()
+    )
+
+
+@dataclass
+class LocalActionGroup:
+    """Structure to help organize all local actions related to a certain main flow."""
+
+    # Action uid ordered action data
+    action_data: Dict[str, LocalActionData] = field(default_factory=dict)
+
+    # A single output event queue for all actions
+    output_event_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue())
+
+
 class RuntimeV2_x(Runtime):
     """Runtime for executing the guardrails."""
 
     def __init__(self, config: RailsConfig, verbose: bool = False):
         super().__init__(config, verbose)
 
-        # Register local system actions
-        self.register_action(self._add_flows_action, "AddFlowsAction", False)
-        self.register_action(self._remove_flows_action, "RemoveFlowsAction", False)
-
-        # Maps main_flow.uid to a dictionary of actions that are run locally, asynchronously.
-        # Dict[main_flow_uid, Dict[action_uid, action_data]]
-        self.async_actions: Dict[str, List] = {}
+        # Maps main_flow.uid to a list of action group data that contains all the locally running actions.
+        self.local_actions: Dict[str, LocalActionGroup] = {}
 
         # A way to disable async function execution. Useful for testing.
         self.disable_async_execution = False
+
+        # Register local system actions
+        self.register_action(self._add_flows_action, "AddFlowsAction", False)
+        self.register_action(self._remove_flows_action, "RemoveFlowsAction", False)
 
     async def _add_flows_action(self, state: "State", **args: dict) -> List[str]:
         log.info("Start AddFlowsAction! %s", args)
@@ -165,6 +274,7 @@ class RuntimeV2_x(Runtime):
     @staticmethod
     def _internal_error_action_result(message: str) -> ActionResult:
         """Helper to construct an action result for an internal error."""
+        # TODO: We should handle this as an ActionFinished(is_success=False) event and not generate custom other events
         return ActionResult(
             events=[
                 {
@@ -189,13 +299,15 @@ class RuntimeV2_x(Runtime):
     ) -> Tuple[Any, List[dict], dict]:
         """Starts the specified action, waits for it to finish and posts back the result."""
 
+        return_value: Any = None
+        return_events: List[dict] = []
+        context_updates: dict = {}
+
         fn = self.action_dispatcher.get_action(action.name)
 
         # TODO: check action is available in action server
         if fn is None:
-            result = self._internal_error_action_result(
-                f"Action '{action.name}' not found."
-            )
+            raise ColangRuntimeError(f"Action '{action.name}' not found.")
         else:
             # We pass all the parameters that are passed explicitly to the action.
             kwargs = {**action.start_event_arguments}
@@ -244,9 +356,16 @@ class RuntimeV2_x(Runtime):
                 if "events" in parameters:
                     kwargs["events"] = state.last_events
 
-                if "event_generator" in parameters:
-                    kwargs["event_generator"] = ActionEventGenerator(
-                        self.config, action, self._async_action_events
+                if "event_handler" in parameters:
+                    kwargs["event_handler"] = ActionEventHandler(
+                        self.config,
+                        action,
+                        self.local_actions[state.main_flow_state.uid]
+                        .action_data[action.uid]
+                        .input_event_queues,
+                        self.local_actions[
+                            state.main_flow_state.uid
+                        ].output_event_queue,
                     )
 
                 if "action" in parameters:
@@ -282,14 +401,20 @@ class RuntimeV2_x(Runtime):
 
             # If the action execution failed, we return a hardcoded message
             if status == "failed":
-                # TODO: make this message configurable.
-                result = self._internal_error_action_result(
-                    "I'm sorry, an internal error has occurred."
+                action_finished_event = self._get_action_finished_event(
+                    self.config,
+                    action,
+                    status="failed",
+                    is_success=False,
+                    failure_reason="Local action finished with an exception!",
                 )
+                return_events.append(action_finished_event)
 
-        return_value: Any = result
-        return_events: List[dict] = []
-        context_updates: dict = {}
+                # result = self._internal_error_action_result(
+                #     "I'm sorry, an internal error has occurred."
+                # )
+
+        return_value = result
 
         if isinstance(result, ActionResult):
             return_value = result.return_value
@@ -297,9 +422,6 @@ class RuntimeV2_x(Runtime):
                 return_events = result.events
             if result.context_updates is not None:
                 context_updates.update(result.context_updates)
-
-        # if return_events:
-        #     next_steps.extend(return_events)
 
         return return_value, return_events, context_updates
 
@@ -374,15 +496,14 @@ class RuntimeV2_x(Runtime):
 
         return event.to_umim_event(rails_config.event_source_uid)
 
-    async def _get_async_action_events(self) -> List[dict]:
+    async def _get_async_action_events(self, main_flow_uid: str) -> List[dict]:
         events = []
         while True:
             try:
                 # Attempt to get an item from the queue without waiting
-                event = self._async_action_events.get_nowait()
-
-                # assert isinstance(event, dict), "Python action events must be a dictionary!"
-                # {'type': 'CheckLocalAsync', 'uid': '486a5628-843b-4ed3-b8b3-315ef01c9a13', 'event_created_at': '2024-12-09T14:55:50.847199+00:00', 'source_uid': 'NeMoGuardrails'}
+                event = self.local_actions[
+                    main_flow_uid
+                ].output_event_queue.get_nowait()
 
                 events.append(event)
             except asyncio.QueueEmpty:
@@ -403,10 +524,13 @@ class RuntimeV2_x(Runtime):
             The array of *ActionFinished events and the pending counter
         """
 
-        pending_actions = self.async_actions.get(main_flow_uid, [])
-        if len(pending_actions) == 0:
+        local_action_group = self.local_actions[main_flow_uid]
+        if len(local_action_group.action_data) == 0:
             return [], 0
 
+        pending_actions = [
+            data.task for data in local_action_group.action_data.values()
+        ]
         done, pending = await asyncio.wait(
             pending_actions,
             return_when=asyncio.FIRST_COMPLETED,
@@ -417,21 +541,36 @@ class RuntimeV2_x(Runtime):
 
         action_finished_events = []
         for finished_task in done:
+            action = finished_task.action  # type: ignore
             try:
                 result = finished_task.result()
-            except Exception:
-                log.warning(
-                    "Local action finished with an exception!",
-                    exc_info=True,
+                # We need to create the corresponding action finished event
+                action_finished_event = self._get_action_finished_event(
+                    self.config, action, **result
                 )
-
-            self.async_actions[main_flow_uid].remove(finished_task)
-
-            # We need to create the corresponding action finished event
-            action_finished_event = self._get_action_finished_event(
-                self.config, **result
-            )
-            action_finished_events.append(action_finished_event)
+                action_finished_events.append(action_finished_event)
+            except asyncio.CancelledError:
+                action_finished_event = self._get_action_finished_event(
+                    self.config,
+                    action,
+                    status="failed",
+                    is_success=False,
+                    was_stopped=True,
+                    failure_reason="stopped",
+                )
+                action_finished_events.append(action_finished_event)
+            except Exception as e:
+                msg = "Local action finished with an exception!"
+                log.warning("%s %s", msg, e)
+                action_finished_event = self._get_action_finished_event(
+                    self.config,
+                    action,
+                    status="failed",
+                    is_success=False,
+                    failure_reason=msg,
+                )
+                action_finished_events.append(action_finished_event)
+            del self.local_actions[main_flow_uid].action_data[action.uid]
 
         return action_finished_events, len(pending)
 
@@ -450,8 +589,8 @@ class RuntimeV2_x(Runtime):
         The events will be processed one by one, in the input order. If new events are
         generated as part of the processing, they will be appended to the input events.
 
-        By default, a processing cycle only waits for the local actions to finish, i.e,
-        if after processing all the input events, there are local actions in progress, the
+        By default, a processing cycle only waits for the non-async local actions to finish, i.e,
+        if after processing all the input events, there are non-async local actions in progress, the
         event processing will wait for them to finish.
 
         In blocking mode, the event processing will also wait for the local async actions.
@@ -474,8 +613,15 @@ class RuntimeV2_x(Runtime):
         input_events: List[Union[dict, InternalEvent]] = []
         local_running_actions: List[asyncio.Task[dict]] = []
 
-        input_events.extend(events)
+        def extend_input_events(events: Sequence[Union[dict, InternalEvent]]):
+            """Make sure to add all new input events to all local async action event queues."""
+            input_events.extend(events)
+            for data in self.local_actions[main_flow_uid].action_data.values():
+                for event in events:
+                    if isinstance(event, dict) and event["type"] != "CheckLocalAsync":
+                        data.input_event_queues.put_nowait(event)
 
+        # Initialize empty state
         if state is None or state == {}:
             state = State(
                 flow_states={}, flow_configs=self.flow_configs, rails_config=self.config
@@ -497,6 +643,7 @@ class RuntimeV2_x(Runtime):
             input_event = InternalEvent(name="StartFlow", arguments={"flow_id": "main"})
             input_events.insert(0, input_event)
             main_flow_state = state.flow_id_states["main"][-1]
+            self.local_actions[main_flow_state.uid] = LocalActionGroup()
 
             # Start all module level flows before main flow
             idx = 0
@@ -519,19 +666,26 @@ class RuntimeV2_x(Runtime):
                     idx += 1
 
         # Check if we have new async action events to add
-        input_events.extend(await self._get_async_action_events())
+        new_events = await self._get_async_action_events(state.main_flow_state.uid)
+        extend_input_events(new_events)
+        output_events.extend(new_events)
 
         # Check if we have new finished async local action events to add
         (
             local_action_finished_events,
             pending_local_action_counter,
         ) = await self._get_async_actions_finished_events(main_flow_uid)
-        input_events.extend(local_action_finished_events)
+        extend_input_events(local_action_finished_events)
+        output_events.extend(local_action_finished_events)
+
         local_action_finished_events = []
         return_local_async_action_count = False
 
-        # While we have input events to process, or there are local running actions
-        # we continue the processing.
+        # Add all input events
+        extend_input_events(events)
+
+        # While we have input events to process, or there are local
+        # (non-async) running actions we continue the processing.
         events_counter = 0
         while input_events or local_running_actions:
             while input_events:
@@ -546,7 +700,11 @@ class RuntimeV2_x(Runtime):
 
                 log.info("Processing event :: %s", event)
                 for watcher in self.watchers:
-                    watcher(event)
+                    if (
+                        not isinstance(event, dict)
+                        or event["type"] != "CheckLocalAsync"
+                    ):
+                        watcher(event)
 
                 event_name = event["type"] if isinstance(event, dict) else event.name
 
@@ -556,6 +714,92 @@ class RuntimeV2_x(Runtime):
 
                 # Record the event that we're about to process
                 state.last_events.append(event)
+
+                # Check if we need run a locally registered action
+                if isinstance(event, dict):
+                    if re.match(r"Start(.*Action)", event["type"]):
+                        action_event = ActionEvent.from_umim_event(event)
+                        action = Action.from_event(action_event)
+                        assert action
+
+                        # If it's an instant action, we finish it right away.
+                        # TODO (schuellc): What is this needed for?
+                        if instant_actions and action.name in instant_actions:
+                            extra = {"action": action}
+                            if action.name == "UtteranceBotAction":
+                                extra["final_script"] = event["script"]
+
+                            action_finished_event = self._get_action_finished_event(
+                                self.config, **extra
+                            )
+
+                            # We send the completion of the action as an output event
+                            # and continue processing it.
+                            # TODO: Why do we need an output event for that? It should only be an new input event
+                            extend_input_events([action_finished_event])
+                            output_events.append(action_finished_event)
+
+                        elif self.action_dispatcher.has_registered(action.name):
+                            # In this case we need to start the action locally
+                            action_fn = self.action_dispatcher.get_action(action.name)
+                            execute_async = getattr(action_fn, "action_meta", {}).get(
+                                "execute_async", False
+                            )
+
+                            # Start the local action
+                            local_action = asyncio.create_task(
+                                self._run_action(
+                                    action,
+                                    state=state,
+                                )
+                            )
+                            # Attach related action to the task
+                            local_action.action = action  # type: ignore
+
+                            # Generate *ActionStarted event
+                            action_started_event = action.started_event({})
+                            action_started_umim_event = (
+                                action_started_event.to_umim_event(
+                                    self.config.event_source_uid
+                                )
+                            )
+                            extend_input_events([action_started_umim_event])
+                            output_events.append(action_started_umim_event)
+
+                            # If the function is not async, or async execution is disabled
+                            # we execute the actions as a local action.
+                            # Also, if we're running this in blocking mode, we add all local
+                            # actions as non-async.
+                            if (
+                                not execute_async
+                                or self.disable_async_execution
+                                or blocking
+                            ):
+                                local_running_actions.append(local_action)
+                            else:
+                                main_flow_uid = state.main_flow_state.uid
+                                if main_flow_uid not in self.local_actions:
+                                    # TODO: This check should not be needed
+                                    self.local_actions[
+                                        main_flow_uid
+                                    ] = LocalActionGroup()
+                                self.local_actions[main_flow_uid].action_data.update(
+                                    {action.uid: LocalActionData(local_action)}
+                                )
+                    elif re.match(r"Stop(.*Action)", event["type"]):
+                        # Check if we need stop a locally running action
+                        action_event = ActionEvent.from_umim_event(event)
+                        action_uid = action_event.arguments.get("action_uid", None)
+                        if action_uid:
+                            data = self.local_actions[main_flow_uid].action_data.get(
+                                action_uid
+                            )
+                            if (
+                                data
+                                and data.task.action.name  # type: ignore
+                                == action_event.name[4:]
+                            ):
+                                data.task.cancel()
 
                 # Advance the state machine
                 new_event: Optional[Union[dict, Event]] = event
@@ -572,96 +816,30 @@ class RuntimeV2_x(Runtime):
                                 "error": str(e),
                             },
                         )
+                    # Give local async action the chance to process events
                     await asyncio.sleep(0.001)
 
-                for out_event in state.outgoing_events:
-                    # We also record the out events in the recent history.
-                    state.last_events.append(out_event)
-
-                    # We need to check if we need to run a locally registered action
-                    start_action_match = re.match(r"Start(.*Action)", out_event["type"])
-                    if start_action_match:
-                        action_event = ActionEvent.from_umim_event(out_event)
-                        action = Action.from_event(action_event)
-                        assert action
-
-                        # If it's an instant action, we finish it right away.
-                        if instant_actions and action.name in instant_actions:
-                            extra = {"action": action}
-                            if action.name == "UtteranceBotAction":
-                                extra["final_script"] = out_event["script"]
-
-                            action_finished_event = self._get_action_finished_event(
-                                self.config, **extra
-                            )
-
-                            # We send the completion of the action as an output event
-                            # and continue processing it.
-                            # TODO: Why do we need an output event for that? It should only be an new input event
-                            output_events.append(action_finished_event)
-                            input_events.append(action_finished_event)
-
-                        elif self.action_dispatcher.has_registered(action.name):
-                            # In this case we need to start the action locally
-                            action_fn = self.action_dispatcher.get_action(action.name)
-                            execute_async = getattr(action_fn, "action_meta", {}).get(
-                                "execute_async", False
-                            )
-
-                            # Start the local action
-                            local_action = asyncio.create_task(
-                                self._run_action(
-                                    action,
-                                    state=state,
-                                )
-                            )
-
-                            # Generate *ActionStarted event
-                            action_started_event = action.started_event({})
-                            action_started_umim_event = (
-                                action_started_event.to_umim_event(
-                                    self.config.event_source_uid
-                                )
-                            )
-                            # output_events.append(action_started_umim_event)
-                            input_events.append(action_started_umim_event)
-
-                            # If the function is not async, or async execution is disabled
-                            # we execute the actions as a local action.
-                            # Also, if we're running this in blocking mode, we add all local
-                            # actions as non-async.
-                            if (
-                                not execute_async
-                                or self.disable_async_execution
-                                or blocking
-                            ):
-                                local_running_actions.append(local_action)
-                            else:
-                                main_flow_uid = state.main_flow_state.uid
-                                if main_flow_uid not in self.async_actions:
-                                    self.async_actions[main_flow_uid] = []
-                                self.async_actions[main_flow_uid].append(local_action)
-                        else:
-                            output_events.append(out_event)
-                    else:
-                        output_events.append(out_event)
-
                 # Add new async action events as new input events
-                input_events.extend(await self._get_async_action_events())
+                new_events = await self._get_async_action_events(
+                    state.main_flow_state.uid
+                )
+                extend_input_events(new_events)
+                output_events.extend(new_events)
 
                 # Add new finished async local action events as new input events
                 (
                     new_action_finished_events,
                     pending_local_action_counter,
                 ) = await self._get_async_actions_finished_events(main_flow_uid)
-                input_events.extend(new_action_finished_events)
+                extend_input_events(new_action_finished_events)
+                output_events.extend(new_action_finished_events)
 
                 # Add generated events as new input events
-                input_events.extend(state.outgoing_events)
+                extend_input_events(state.outgoing_events)
+                output_events.extend(state.outgoing_events)
 
-            # If we have any local running actions, we need to wait for at least one
+            # If we have any non-async local running actions, we need to wait for at least one
             # of them to finish.
-            # TODO: Check why we should wait for one to finish?!
             if local_running_actions:
                 log.info(
                     "Waiting for %d local actions to finish.",
@@ -678,7 +856,7 @@ class RuntimeV2_x(Runtime):
 
                     # We need to create the corresponding action finished event
                     action_finished_event = self._get_action_finished_event(
-                        self.config, **result
+                        self.config, finished_task.action, **result  # type: ignore
                     )
                     input_events.append(action_finished_event)
 
@@ -694,12 +872,25 @@ class RuntimeV2_x(Runtime):
                 )
             )
 
-        # TODO: serialize the state to dict
-
         # We cap the recent history to the last 500
         state.last_events = state.last_events[-500:]
 
-        return output_events, state
+        if state.main_flow_state.status == FlowStatus.FINISHED:
+            log.info("End of story!")
+            del self.local_actions[main_flow_uid]
+
+        # We currently filter out all events related local actions
+        # TODO: Consider if we should expose them all as umim events
+        final_output_events = []
+        for event in output_events:
+            if isinstance(event, dict) and "action_uid" in event:
+                action_event = ActionEvent.from_umim_event(event)
+                action = Action.from_event(action_event)
+                if action and self.action_dispatcher.has_registered(action.name):
+                    continue
+            final_output_events.append(event)
+
+        return final_output_events, state
 
     async def _run_action(
         self,
@@ -722,7 +913,6 @@ class RuntimeV2_x(Runtime):
         state.context.update(context_updates)
 
         return {
-            "action": action,
             "return_value": return_value,
             "new_events": new_events,
             "context_updates": context_updates,

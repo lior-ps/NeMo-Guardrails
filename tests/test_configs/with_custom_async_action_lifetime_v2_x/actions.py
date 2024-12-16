@@ -16,14 +16,19 @@
 import asyncio
 
 from nemoguardrails.actions import action
-from nemoguardrails.actions.action_dispatcher import ActionEventGenerator
+from nemoguardrails.colang.v2_x.runtime.runtime import ActionEventHandler
 
 
-@action(name="CustomAsyncTestAction", is_system_action=True, execute_async=True)
-async def custom_async_test(event_generator: ActionEventGenerator):
-    for i in range(1, 5):
-        await asyncio.sleep(1)
-        event_generator.send_action_updated_event("Value", {"number": i})
+@action(name="Test1Action", is_system_action=True, execute_async=True)
+async def test1():
     await asyncio.sleep(1)
-    event_generator.send_raw_event("NewCustomUmimEvent", {"secret": "xyz"})
-    await asyncio.sleep(1)
+
+
+@action(name="Test2Action", is_system_action=True, execute_async=True)
+async def test2(event_handler: ActionEventHandler):
+    await event_handler.wait_for_events("NeverHappeningEver")
+
+
+@action(name="Test3Action", is_system_action=True, execute_async=True)
+async def test3(event_handler: ActionEventHandler):
+    raise Exception("Issue occurred!")

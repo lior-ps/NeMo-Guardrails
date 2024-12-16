@@ -34,7 +34,7 @@ from nemoguardrails.actions.v2_x.generation import LLMGenerationActionsV2dotx
 from nemoguardrails.colang import parse_colang_file
 from nemoguardrails.colang.v1_0.runtime.flows import compute_context
 from nemoguardrails.colang.v1_0.runtime.runtime import Runtime, RuntimeV1_0
-from nemoguardrails.colang.v2_x.runtime.flows import Action, State
+from nemoguardrails.colang.v2_x.runtime.flows import Action, ActionEvent, State
 from nemoguardrails.colang.v2_x.runtime.runtime import RuntimeV2_x
 from nemoguardrails.colang.v2_x.runtime.serialization import (
     json_to_state,
@@ -732,24 +732,27 @@ class LLMRails:
                 start_action_match = re.match(r"Start(.*Action)", event["type"])
 
                 if start_action_match:
-                    action_name = start_action_match[1]
-                    # TODO: is there an elegant way to extract just the arguments?
-                    arguments = {
-                        k: v
-                        for k, v in event.items()
-                        if k != "type"
-                        and k != "uid"
-                        and k != "event_created_at"
-                        and k != "source_uid"
-                        and k != "action_uid"
-                    }
-                    response_tool_calls.append(
-                        {
-                            "id": event["action_uid"],
-                            "type": "function",
-                            "function": {"name": action_name, "arguments": arguments},
-                        }
-                    )
+                    action_event = ActionEvent.from_umim_event(event)
+                    action = Action.from_event(action_event)
+                    if action:
+                        # TODO (schuellc): Check why we need this?
+                        # Also it seems we need to exclude the following actions
+                        if action.name in [
+                            "UtteranceBotAction",
+                            "GestureBotAction",
+                            "PostureBotAction",
+                        ]:
+                            continue
+                        response_tool_calls.append(
+                            {
+                                "id": action.uid,
+                                "type": "function",
+                                "function": {
+                                    "name": action.name,
+                                    "arguments": action.start_event_arguments,
+                                },
+                            }
+                        )
 
                 elif event["type"] == "UtteranceBotActionFinished":
                     responses.append(event["final_script"])

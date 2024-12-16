@@ -15,7 +15,6 @@
 
 """Module for the calling proper action endpoints based on events received at action server endpoint"""
 
-import asyncio
 import importlib.util
 import inspect
 import logging
@@ -28,46 +27,9 @@ from langchain_core.runnables import Runnable
 
 from nemoguardrails import utils
 from nemoguardrails.actions.llm.utils import LLMCallException
-from nemoguardrails.colang.v2_x.runtime.flows import Action, Event
 from nemoguardrails.logging.callbacks import logging_callbacks
-from nemoguardrails.rails.llm.config import RailsConfig
 
 log = logging.getLogger(__name__)
-
-
-class ActionEventGenerator:
-    """Generator to emit event from async Python actions."""
-
-    def __init__(
-        self,
-        config: RailsConfig,
-        action: Action,
-        action_event_queue: asyncio.Queue[dict],
-    ):
-        # The LLMRails config
-        self._config = config
-
-        # The relevant action
-        self._action = action
-
-        # Contains reference to the async action event queue
-        self._action_events_queue = action_event_queue
-
-    def send_action_updated_event(self, event_name: str, args: dict) -> None:
-        """Send an Action*Updated event."""
-        action_event = self._action.updated_event(
-            {"event_parameter_name": event_name, **args}
-        )
-        self._action_events_queue.put_nowait(
-            action_event.to_umim_event(self._config.event_source_uid)
-        )
-
-    def send_raw_event(self, event_name: str, args: dict) -> None:
-        """Send any event."""
-        event = Event(event_name, args)
-        self._action_events_queue.put_nowait(
-            event.to_umim_event(self._config.event_source_uid)
-        )
 
 
 class ActionDispatcher:
@@ -76,7 +38,6 @@ class ActionDispatcher:
         load_all_actions: bool = True,
         config_path: Optional[str] = None,
         import_paths: Optional[List[str]] = None,
-        action_event_queue: Optional[asyncio.Queue[dict]] = None,
     ):
         """
         Initializes an actions dispatcher.
@@ -92,9 +53,6 @@ class ActionDispatcher:
 
         # Dictionary with all registered actions
         self._registered_actions: dict = {}
-
-        # Contains generated events form async actions
-        self._async_action_events: Optional[asyncio.Queue[dict]] = action_event_queue
 
         if load_all_actions:
             # TODO: check for better way to find actions dir path or use constants.py
@@ -224,7 +182,7 @@ class ActionDispatcher:
 
     async def execute_action(
         self, action_name: str, params: Dict[str, Any]
-    ) -> Tuple[Union[str, Dict[str, Any]], str]:
+    ) -> Tuple[Optional[Union[str, Dict[str, Any]]], str]:
         """Execute a registered action.
 
         Args:
@@ -299,15 +257,12 @@ class ActionDispatcher:
                     filtered_params = {
                         k: v
                         for k, v in params.items()
-                        if k not in ["state", "events", "llm"]
+                        if k not in ["state", "events", "llm", "event_handler"]
                     }
-                    log.warning(
-                        "Error while execution '%s' with parameters '%s': %s",
-                        action_name,
-                        filtered_params,
-                        e,
+                    msg = (
+                        f"Exception while execution '{action_name}' with parameters '{filtered_params}'",
                     )
-                    log.exception(e)
+                    raise Exception(f"{msg}: {e}") from e
 
         return None, "failed"
 

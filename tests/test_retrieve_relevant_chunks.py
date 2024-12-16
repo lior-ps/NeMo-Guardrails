@@ -29,12 +29,12 @@ flow main
     activate llm continuation
 
 flow user express greeting
-   user said "hello"
-   or user said "hi"
-   or user said "how are you"
+    user said "hello"
+    or user said "hi"
+    or user said "how are you"
 
 flow bot express greeting
-   bot say "Hey!"
+    bot say "Hey!"
 
 flow greeting
     user express greeting
@@ -58,7 +58,7 @@ def test_relevant_chunk_inserted_in_prompt():
         config,
         llm_completions=[
             " user express greeting",
-            ' bot respond to aditional context\nbot action: "Hello is there anything else" ',
+            ' bot respond to additional context\nbot action: bot say "Hello is there anything else" ',
         ],
     )
 
@@ -85,7 +85,7 @@ def test_relevant_chunk_inserted_in_prompt_no_kb():
         config,
         llm_completions=[
             " user express greeting",
-            ' bot respond to aditional context\nbot action: "Hello is there anything else" ',
+            ' bot respond to aditional context\nbot action: bot say "Hello is there anything else" ',
         ],
     )
     rails = chat.app

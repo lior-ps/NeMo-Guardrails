@@ -25,6 +25,7 @@ import aiohttp
 from langchain.chains.base import Chain
 
 from nemoguardrails.actions.actions import ActionResult
+from nemoguardrails.actions.llm.utils import LLMCallException
 from nemoguardrails.colang import parse_colang_file
 from nemoguardrails.colang.runtime import Runtime
 from nemoguardrails.colang.v1_0.runtime.flows import (
@@ -360,9 +361,16 @@ class RuntimeV1_0(Runtime):
                     kwargs["llm"] = self.registered_action_params[f"{action_name}_llm"]
 
                 log.info("Executing action :: %s", action_name)
-                result, status = await self.action_dispatcher.execute_action(
-                    action_name, kwargs
-                )
+                try:
+                    result, status = await self.action_dispatcher.execute_action(
+                        action_name, kwargs
+                    )
+                except LLMCallException as e:
+                    raise e
+                except Exception as e:
+                    result = None
+                    status = "failed"
+                    log.exception(e)
 
             # If the action execution failed, we return a hardcoded message
             if status == "failed":

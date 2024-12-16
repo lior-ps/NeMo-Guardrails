@@ -1,0 +1,21 @@
+flow main
+  match UtteranceUserAction.Finished(final_transcript="start")
+
+  # Normal action lifetime
+  start Test1Action() as $action1_ref
+  match $action1_ref.Started()
+  match $action1_ref.Finished() as $ref
+  start UtteranceBotAction(script="Result: {$ref.is_success}")
+
+  # Action gets canceled
+  start Test2Action() as $action2_ref
+  match $action2_ref.Started()
+  send StopTest2Action(action_uid=$action2_ref.uid)
+  match $action2_ref.Finished() as $ref
+  start UtteranceBotAction(script="Result: {$ref.was_stopped}")
+
+  # Action raises Exception
+  start Test3Action() as $action3_ref
+  match $action3_ref.Started()
+  match $action3_ref.Finished() as $ref
+  start UtteranceBotAction(script="Result: {$ref.failure_reason}")

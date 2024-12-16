@@ -191,7 +191,7 @@ def test_examples_included_in_prompts_2(colang_2_config):
         colang_2_config,
         llm_completions=[
             " user express greeting",
-            ' bot respond to uknown intent "Hello is there anything else" ',
+            ' bot respond to unknown intent\nbot action: bot say "Hello is there anything else"',
         ],
     )
 
@@ -214,7 +214,7 @@ def test_no_llm_calls_embedding_only(colang_2_config):
         colang_2_config,
         llm_completions=[
             " user express greeting",
-            ' bot respond to uknown intent "Hello is there anything else" ',
+            ' bot respond to unknown intent "Hello is there anything else" ',
         ],
     )
 

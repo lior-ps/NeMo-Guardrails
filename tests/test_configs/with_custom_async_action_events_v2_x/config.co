@@ -1,0 +1,16 @@
+flow main
+  match UtteranceUserAction.Finished(final_transcript="start")
+  start CustomAsyncTest1Action() as $action1_ref
+  start CustomAsyncTest2Action()
+  match $action1_ref.Started()
+  while True:
+    when $action1_ref.ValueUpdated() as $ref:
+      start UtteranceBotAction(script="Value: {$ref.number}")
+    or when CustomEventA() as $ref:
+      start UtteranceBotAction(script="Value: {$ref.value}")
+      send CustomEventB(value="B")
+      match CustomEventC(value="C")
+      start UtteranceBotAction(script="Check")
+    or when $action1_ref.Finished() as $event:
+      start UtteranceBotAction(script="End")
+      break

@@ -228,7 +228,13 @@ class Action:
         assert event.action_uid is not None
         for name in cls._event_name_map:
             if name in event.name:
-                action = Action(event.name.replace(name, ""), {})
+                action_name: str
+                if name == "Updated":
+                    index = event.name.find("Action") + 6
+                    action_name = event.name[:index]
+                else:
+                    action_name = event.name.replace(name, "")
+                action = Action(action_name, {})
                 action.uid = event.action_uid
                 action.status = (
                     ActionStatus.STARTED

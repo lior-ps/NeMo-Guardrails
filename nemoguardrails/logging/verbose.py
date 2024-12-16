@@ -163,6 +163,10 @@ class VerboseHandler(logging.StreamHandler):
                     msg += f"[dim]{title}[/]"
 
                 console.print(msg, highlight=False, no_wrap=False)
+        elif record.levelno >= logging.WARNING:
+            current_time = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            msg = f"[dim]{current_time}[/] | [yellow bold]Warning[/] | " + msg
+            console.print(msg, highlight=False, no_wrap=False)
 
 
 def set_verbose(
