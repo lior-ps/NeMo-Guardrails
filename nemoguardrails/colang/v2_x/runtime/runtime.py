@@ -917,9 +917,12 @@ class RuntimeV2_x(Runtime):
         # We cap the recent history to the last 500
         state.last_events = state.last_events[-500:]
 
-        if state.main_flow_state.status == FlowStatus.FINISHED:
+        if state.main_flow_state.status == FlowStatus.WAITING:
+            # Main flow is done, release related local action data
             log.info("End of story!")
-            del self.local_actions[main_flow_uid]
+            for item in self.local_actions[main_flow_uid].action_data.values():
+                item.task.cancel()
+            self.local_actions[main_flow_uid].action_data.clear()
 
         # We currently filter out all events related local actions
         # TODO: Consider if we should expose them all as umim events
