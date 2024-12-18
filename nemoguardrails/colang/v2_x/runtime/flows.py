@@ -177,7 +177,7 @@ class ActionEvent(Event):
             "source_uid",
             event_source_uid if event_source_uid else "NeMoGuardrails-Colang-2.x",
         )
-        if self.action_uid:
+        if self.action_uid and "action_uid" not in new_event_args:
             return new_event_dict(
                 self.name, action_uid=self.action_uid, **new_event_args
             )
